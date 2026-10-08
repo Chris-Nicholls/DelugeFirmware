@@ -494,3 +494,16 @@ TEST(KeyframeStretcherTest, keepsTheTopEnd) {
 		CHECK(levelDb > -1.0 && levelDb < 0.5);
 	}
 }
+
+TEST(KeyframeStretcherTest, hasHeadroomAboveFullScale) {
+	// Reconstruction can overshoot the source samples (true peaks between them), so it mustn't clip at full scale
+	std::vector<float> src = sine(3000.0f, 1.3f, 1.0f); // Input is half-scale q31, so this is representable
+	Player player(src);
+	std::vector<float> out = player.render(30000, 1.0f, 1.0f);
+	float peak = 0.0f;
+	for (size_t i = 4000; i < out.size(); i++) {
+		peak = std::max(peak, std::abs(out[i]));
+	}
+	CHECK(peak > 1.25f);
+	DOUBLES_EQUAL(rms(src, 4000, 30000), rms(out, 4000, 30000), 0.02);
+}

@@ -85,9 +85,14 @@ constexpr double kDiscontinuity = 256.0;
 // Highest pitch ratio honoured; beyond this the lookahead wouldn't fit the ring.
 constexpr float kMaxPitch = 16.0f;
 
-inline int32_t toQ31(float y) {
-	y = std::clamp(y, -1.0f, 0.99999994f);
-	return static_cast<int32_t>(y * kOutputScale);
+// Adds y (1.0 = full scale) times a q31 amplitude onto sum, as multiply_accumulate_32x32_rshift32_rounded() would
+// with a full-scale q31 sample - but with 6 dB of headroom, like the classic resampler's half-scale output. The
+// reconstruction can overshoot the source's samples (keyframe values are read at the true peak between them), and on
+// normalised material clipping that at full scale would add exactly the kind of crunch this algorithm is prone to.
+inline int32_t accumulate(int32_t sum, float y, int32_t amplitude) {
+	y = std::clamp(y, -2.0f, 1.9999999f);
+	const int32_t half = static_cast<int32_t>(y * (0.5f * kOutputScale));
+	return sum + static_cast<int32_t>(((int64_t)half * amplitude + (1 << 30)) >> 31);
 }
 
 } // namespace
@@ -428,13 +433,13 @@ void KeyframeStretcher::renderSpan(int32_t* out, int32_t from, int32_t to, int32
 
 		if (outChannels == 2) {
 			const float r = (numChannels_ == 2) ? y[1] : y[0];
-			outPos[0] = multiply_accumulate_32x32_rshift32_rounded(outPos[0], toQ31(y[0]), *amplitude);
-			outPos[1] = multiply_accumulate_32x32_rshift32_rounded(outPos[1], toQ31(r), *amplitude);
+			outPos[0] = accumulate(outPos[0], y[0], *amplitude);
+			outPos[1] = accumulate(outPos[1], r, *amplitude);
 			outPos += 2;
 		}
 		else {
 			const float m = (numChannels_ == 2) ? 0.5f * (y[0] + y[1]) : y[0];
-			*outPos = multiply_accumulate_32x32_rshift32_rounded(*outPos, toQ31(m), *amplitude);
+			*outPos = accumulate(*outPos, m, *amplitude);
 			outPos++;
 		}
 	}
