@@ -208,11 +208,6 @@ void RuntimeFeatureSettings::init() {
 	// Shortcut Overlay
 	SetupOnOffSetting(settings[RuntimeFeatureSettingType::ShortcutOverlay],
 	                  STRING_FOR_COMMUNITY_FEATURE_SHORTCUT_OVERLAY, "shortcutOverlay", RuntimeFeatureStateToggle::On);
-
-	// Keyframe (capicola) time stretching instead of the classic algorithm
-	SetupOnOffSetting(settings[RuntimeFeatureSettingType::KeyframeTimeStretch],
-	                  STRING_FOR_COMMUNITY_FEATURE_KEYFRAME_TIME_STRETCH, "keyframeTimeStretch",
-	                  RuntimeFeatureStateToggle::Off);
 }
 
 void RuntimeFeatureSettings::factoryReset(bool showPopup) {

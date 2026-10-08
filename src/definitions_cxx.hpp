@@ -794,11 +794,16 @@ enum class MarkerType {
 };
 constexpr int32_t kNumMarkerTypes = util::to_underlying(MarkerType::END) + 1;
 
+/// Also selects the time stretching algorithm: LINEAR and SMOOTH (shown as "Sinc") are the resampling quality used by
+/// the classic hop-based time stretcher (and by all non-stretched pitch changes), while KEYFRAME switches stretching
+/// to the keyframe (capicola) engine - see dsp/timestretch/keyframe_stretcher.h. Non-stretched pitch changes use
+/// SMOOTH resampling under KEYFRAME.
 enum class InterpolationMode {
 	LINEAR,
 	SMOOTH,
+	KEYFRAME,
 };
-constexpr int32_t kNumInterpolationModes = 2;
+constexpr int32_t kNumInterpolationModes = 3;
 
 constexpr int32_t kCacheByteDepth = 3;
 constexpr int32_t kCacheByteDepthMagnitude = 2; // Invalid / unused for odd numbers of bytes like 3

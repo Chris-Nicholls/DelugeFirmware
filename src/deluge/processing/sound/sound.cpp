@@ -3429,6 +3429,12 @@ Error Sound::readSourceFromFile(Deserializer& reader, int32_t s, ParamManagerFor
 			}
 			reader.exitTag("linearInterpolation");
 		}
+		else if (!strcmp(tagName, "keyframeStretch")) {
+			if (reader.readTagOrAttributeValueInt()) {
+				source->sampleControls.interpolationMode = InterpolationMode::KEYFRAME;
+			}
+			reader.exitTag("keyframeStretch");
+		}
 		else if (!strcmp(tagName, "retrigPhase")) {
 			oscRetriggerPhase[s] = reader.readTagOrAttributeValueInt();
 			reader.exitTag("retrigPhase");
@@ -3635,6 +3641,9 @@ void Sound::writeSourceToFile(Serializer& writer, int32_t s, char const* tagName
 		writer.writeAttribute("timeStretchAmount", source->timeStretchAmount);
 		if (source->sampleControls.interpolationMode == InterpolationMode::LINEAR) {
 			writer.writeAttribute("linearInterpolation", 1);
+		}
+		else if (source->sampleControls.interpolationMode == InterpolationMode::KEYFRAME) {
+			writer.writeAttribute("keyframeStretch", 1); // Older firmware ignores this, and plays it as Sinc
 		}
 
 		int32_t numRanges = source->ranges.getNumElements();

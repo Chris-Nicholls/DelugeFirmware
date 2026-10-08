@@ -23,7 +23,6 @@
 #include "memory/general_memory_allocator.h"
 #include "model/sample/sample.h"
 #include "model/sample/sample_cache.h"
-#include "model/settings/runtime_feature_settings.h"
 #include "model/voice/voice.h"
 #include "playback/playback_handler.h"
 #include "processing/engines/audio_engine.h"
@@ -35,12 +34,6 @@
 extern "C" {}
 
 extern int32_t spareRenderingBuffer[][SSI_TX_BUFFER_NUM_SAMPLES];
-
-namespace {
-bool useKeyframeTimeStretching() {
-	return runtimeFeatureSettings.isOn(RuntimeFeatureSettingType::KeyframeTimeStretch);
-}
-} // namespace
 
 void VoiceSample::beenUnassigned(bool wontBeUsedAgain) {
 	unassignAllReasons(wontBeUsedAgain);
@@ -313,7 +306,8 @@ bool VoiceSample::fudgeTimeStretchingToAvoidClick(Sample* sample, SamplePlayback
 // Returns false if becoming unassigned now
 bool VoiceSample::weShouldBeTimeStretchingNow(Sample* sample, SamplePlaybackGuide* guide, int32_t numSamples,
                                               int32_t phaseIncrement, int32_t timeStretchRatio, int32_t playDirection,
-                                              int32_t priorityRating, LoopType loopingType) {
+                                              int32_t priorityRating, LoopType loopingType,
+                                              InterpolationMode interpolationMode) {
 
 	// If not set up yet, do it
 	if (!timeStretcher) {
@@ -329,7 +323,7 @@ bool VoiceSample::weShouldBeTimeStretchingNow(Sample* sample, SamplePlaybackGuid
 		int32_t playSample = divide_round_negative(playByte, sample->numChannels * sample->byteDepth);
 
 		// The keyframe engine renders straight to the output, so it's not used when we're writing to a cache
-		bool useKeyframeEngine = (cache == nullptr) && useKeyframeTimeStretching();
+		bool useKeyframeEngine = (cache == nullptr) && interpolationMode == InterpolationMode::KEYFRAME;
 		timeStretcher->init(sample, this, guide, (int64_t)playSample << 24, sample->numChannels, phaseIncrement,
 		                    timeStretchRatio, playDirection, priorityRating, 0, loopingType, useKeyframeEngine);
 		bool success = reassessReassessmentLocation(
@@ -442,8 +436,9 @@ bool VoiceSample::render(SamplePlaybackGuide* guide, int32_t* __restrict__ outpu
 		// described
 		if (phaseIncrement != cache->phaseIncrement || timeStretchRatio != cache->timeStretchRatio
 		    || (phaseIncrement != kMaxSampleValue
-		        && (desiredInterpolationMode != InterpolationMode::SMOOTH
-		            || (interpolationBufferSize <= 2 && writingToCache)))) {
+		        && (desiredInterpolationMode == InterpolationMode::LINEAR
+		            || (interpolationBufferSize <= 2 && writingToCache)))
+		    || (desiredInterpolationMode == InterpolationMode::KEYFRAME && timeStretchRatio != kMaxSampleValue)) {
 
 			bool needToAvoidClick = (!writingToCache && cache->timeStretchRatio != kMaxSampleValue);
 			SampleCache* oldCache = cache;
@@ -455,8 +450,9 @@ bool VoiceSample::render(SamplePlaybackGuide* guide, int32_t* __restrict__ outpu
 			// Avoid click if cancelling reading time-stretched cache
 			if (needToAvoidClick) {
 
-				success = weShouldBeTimeStretchingNow(sample, guide, numSamples, phaseIncrement, timeStretchRatio,
-				                                      playDirection, priorityRating, loopingType);
+				success =
+				    weShouldBeTimeStretchingNow(sample, guide, numSamples, phaseIncrement, timeStretchRatio,
+				                                playDirection, priorityRating, loopingType, desiredInterpolationMode);
 				if (!success) {
 					return false;
 				}
@@ -508,7 +504,8 @@ bool VoiceSample::render(SamplePlaybackGuide* guide, int32_t* __restrict__ outpu
 					// cohesively until it's ultimately dealt with.
 
 					success = weShouldBeTimeStretchingNow(sample, guide, numSamples, phaseIncrement, timeStretchRatio,
-					                                      playDirection, priorityRating, loopingType);
+					                                      playDirection, priorityRating, loopingType,
+					                                      desiredInterpolationMode);
 					if (!success) {
 						return false;
 					}
@@ -541,10 +538,21 @@ bool VoiceSample::render(SamplePlaybackGuide* guide, int32_t* __restrict__ outpu
 	// If not reading from a cache (but possibly writing to one)...
 	if (!cache || writingToCache) {
 
+		// If the time stretching algorithm was changed (it's chosen in the Interpolation menu) while we're stretching,
+		// hand over to the new one
+		if (timeStretcher && !fudging && !cache
+		    && (timeStretcher->keyframe != nullptr) != (desiredInterpolationMode == InterpolationMode::KEYFRAME))
+		    [[unlikely]] {
+			if (!stopTimeStretchingForAlgorithmChange(guide, sample, loopingType, priorityRating)) {
+				return false;
+			}
+		}
+
 		// If we should be time stretching now...
 		if (timeStretchRatio != kMaxSampleValue) {
-			bool stillGoing = weShouldBeTimeStretchingNow(sample, guide, numSamples, phaseIncrement, timeStretchRatio,
-			                                              playDirection, priorityRating, loopingType);
+			bool stillGoing =
+			    weShouldBeTimeStretchingNow(sample, guide, numSamples, phaseIncrement, timeStretchRatio, playDirection,
+			                                priorityRating, loopingType, desiredInterpolationMode);
 			if (!stillGoing) {
 				return false;
 			}
@@ -1798,12 +1806,12 @@ bool VoiceSample::possiblySetUpCache(SampleControls* sampleControls, SamplePlayb
 	if (guide->sequenceSyncLengthTicks && (playbackHandler.isExternalClockActive())) {
 		return true; // No syncing to external clock
 	}
-	// The keyframe engine renders straight to the output - nothing to cache
-	if ((timeStretcher && timeStretcher->keyframe)
-	    || (timeStretchRatio != kMaxSampleValue && useKeyframeTimeStretching())) {
+	if (sampleControls->interpolationMode == InterpolationMode::LINEAR) {
 		return true;
 	}
-	if (sampleControls->interpolationMode != InterpolationMode::SMOOTH) {
+	// The keyframe engine renders straight to the output - nothing to cache
+	if ((timeStretcher && timeStretcher->keyframe)
+	    || (sampleControls->interpolationMode == InterpolationMode::KEYFRAME && timeStretchRatio != kMaxSampleValue)) {
 		return true;
 	}
 
@@ -1931,4 +1939,30 @@ bool VoiceSample::renderKeyframeStretched(int32_t* outputBuffer, SamplePlaybackG
 
 	return !(loopingType == LoopType::NONE && !timeStretcher->playHeadStillActive[PLAY_HEAD_OLDER]
 	         && !timeStretcher->playHeadStillActive[PLAY_HEAD_NEWER]);
+}
+
+// The time stretching algorithm was changed while this voice was stretching. Stop stretching, leaving our reader at
+// the play position, so render() can start the other algorithm from there.
+// Returns false if the voice should be unassigned.
+bool VoiceSample::stopTimeStretchingForAlgorithmChange(SamplePlaybackGuide* guide, Sample* sample, LoopType loopingType,
+                                                       int32_t priorityRating) {
+	// The keyframe engine's feed reads ahead of the play position, so put the reader back there first
+	if (timeStretcher->keyframe) {
+		int32_t samplePos = timeStretcher->getSamplePos(guide->playDirection);
+		int32_t bytesPerSample = sample->byteDepth * sample->numChannels;
+		unassignAllReasons(false);
+		interpolationBufferSizeLastTime = 0;
+		oscPos = 0;
+		if (!setupClustersForPlayFromByte(guide, sample, sample->audioDataStartPosBytes + samplePos * bytesPerSample,
+		                                  priorityRating)) {
+			return false;
+		}
+	}
+	endTimeStretching();
+
+	// As when time stretching ends normally
+	if (!reassessReassessmentLocation(guide, sample, priorityRating)) {
+		return false;
+	}
+	return changeClusterIfNecessary(guide, sample, loopingType == LoopType::LOW_LEVEL, priorityRating);
 }

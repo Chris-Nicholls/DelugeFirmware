@@ -1064,6 +1064,9 @@ void AudioClip::writeDataToFile(Serializer& writer, Song* song) {
 	if (sampleControls.interpolationMode == InterpolationMode::LINEAR) {
 		writer.writeAttribute("linearInterpolation", 1);
 	}
+	else if (sampleControls.interpolationMode == InterpolationMode::KEYFRAME) {
+		writer.writeAttribute("keyframeStretch", 1); // Older firmware ignores this, and plays it as Sinc
+	}
 	if (sampleControls.isCurrentlyReversed()) {
 		writer.writeAttribute("reversed", 1);
 	}
@@ -1153,6 +1156,12 @@ someError:
 		else if (!strcmp(tagName, "linearInterpolation")) {
 			if (reader.readTagOrAttributeValueInt()) {
 				sampleControls.interpolationMode = InterpolationMode::LINEAR;
+			}
+		}
+
+		else if (!strcmp(tagName, "keyframeStretch")) {
+			if (reader.readTagOrAttributeValueInt()) {
+				sampleControls.interpolationMode = InterpolationMode::KEYFRAME;
 			}
 		}
 
