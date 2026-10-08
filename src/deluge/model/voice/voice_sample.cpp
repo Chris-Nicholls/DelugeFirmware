@@ -1942,6 +1942,18 @@ bool VoiceSample::renderKeyframeStretched(int32_t* outputBuffer, SamplePlaybackG
 			int32_t feedAmplitude = 2147483647;
 			readSamplesNative(&feedPos, framesNow, sample, jumpAmount, sourceNumChannels, engineNumChannels,
 			                  &feedAmplitude, 0);
+#if KEYFRAME_DIAGNOSTIC == 2
+			// Test tone instead of the sample: -6 dBFS 440 Hz, continuous across feeds
+			static uint32_t diagPhase = 0;
+			for (int32_t i = 0; i < framesNow; i++) {
+				int32_t v =
+				    (int32_t)(0.5f * 1073741824.0f * sinf((float)diagPhase * (2.0f * 3.14159265f / 4294967296.0f)));
+				diagPhase += 42852281u; // 440 / 44100 * 2^32
+				for (int32_t c = 0; c < engineNumChannels; c++) {
+					feedBuffer[i * engineNumChannels + c] = v;
+				}
+			}
+#endif
 			engine.feed(feedBuffer, framesNow);
 		}
 		framesLeft -= framesNow;

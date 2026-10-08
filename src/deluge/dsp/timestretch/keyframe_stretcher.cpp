@@ -235,6 +235,13 @@ void KeyframeStretcher::pushOnset(double onset) {
 }
 
 void KeyframeStretcher::feed(const int32_t* frames, int32_t numFrames) {
+#if KEYFRAME_DIAGNOSTIC == 1
+	for (int32_t i = 0; i < numFrames; i++) {
+		for (int32_t c = 0; c < numChannels_; c++) {
+			diagRing_[c][(fed_ + i) & (kDiagRing - 1)] = static_cast<float>(frames[i * numChannels_ + c]) * kInputScale;
+		}
+	}
+#endif
 	if (numChannels_ == 2) {
 		for (int32_t i = 0; i < numFrames; i++) {
 			const float l = static_cast<float>(frames[0]) * kInputScale;
@@ -405,14 +412,30 @@ bool KeyframeStretcher::handleOnset(int32_t i, double gridStart, float gridSpeed
 	return false;
 }
 
+#if KEYFRAME_DIAGNOSTIC == 1
+float KeyframeStretcher::diagRead(int32_t c, double pos) const {
+	const double f = std::floor(pos);
+	const int64_t i = static_cast<int64_t>(f);
+	const float t = static_cast<float>(pos - f);
+	const float a = diagRing_[c][i & (kDiagRing - 1)];
+	const float b = diagRing_[c][(i + 1) & (kDiagRing - 1)];
+	return a + t * (b - a);
+}
+#endif
+
 void KeyframeStretcher::renderSpan(int32_t* out, int32_t from, int32_t to, int32_t outChannels, int32_t* amplitude,
                                    int32_t amplitudeIncrement) {
 	int32_t* outPos = out + from * outChannels;
 	const int32_t live = liveGrain_;
-	const int32_t idle = live ^ 1;
+	[[maybe_unused]] const int32_t idle = live ^ 1;
 
 	for (int32_t i = from; i < to; i++) {
 		float y[2];
+#if KEYFRAME_DIAGNOSTIC == 1
+		for (int32_t c = 0; c < numChannels_; c++) {
+			y[c] = diagRead(c, diagGrid_ + static_cast<double>(diagGridSpeed_) * i);
+		}
+#else
 		if (xGain_ >= 1.0f) {
 			for (int32_t c = 0; c < numChannels_; c++) {
 				y[c] = channels_[c].grain[live].Read();
@@ -427,6 +450,7 @@ void KeyframeStretcher::renderSpan(int32_t* out, int32_t from, int32_t to, int32
 			}
 			xGain_ = std::min(xGain_ + xStep_, 1.0f);
 		}
+#endif
 
 		*amplitude += amplitudeIncrement;
 
@@ -475,6 +499,11 @@ void KeyframeStretcher::render(int32_t* out, int32_t numSamples, int32_t outChan
 	for (int32_t c = 0; c < numChannels_; c++) {
 		channels_[c].grain[liveGrain_].SetGrid(gridStart);
 	}
+
+#if KEYFRAME_DIAGNOSTIC == 1
+	diagGrid_ = gridStart;
+	diagGridSpeed_ = gridSpeed;
+#endif
 
 	int32_t i = 0;
 	while (i < numSamples) {

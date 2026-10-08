@@ -23,6 +23,13 @@
 #include "dsp/timestretch/capicola/SparseLine.h"
 #include <cstdint>
 
+// Diagnostic builds, for finding problems on hardware. 0 = normal. 1 = passthrough: everything runs as normal, but the
+// output is the fed samples read back at the grid position, bypassing the keyframe reconstruction. 2 = test tone: the
+// source is replaced by a 440 Hz sine before it's fed (see VoiceSample::renderKeyframeStretched()).
+#ifndef KEYFRAME_DIAGNOSTIC
+#define KEYFRAME_DIAGNOSTIC 0
+#endif
+
 namespace deluge::dsp::timestretch {
 
 /// Keyframe time stretching (capicola, see capicola/README.md) driven by Sample playback.
@@ -137,6 +144,14 @@ private:
 	int32_t liveGrain_; ///< Index of the grain fading in / steady; the other fades out
 	float xGain_;       ///< Gain of the live grain during a takeover
 	float xStep_;
+
+#if KEYFRAME_DIAGNOSTIC == 1
+	static constexpr int32_t kDiagRing = 16384;
+	float diagRing_[2][kDiagRing];
+	double diagGrid_;
+	float diagGridSpeed_;
+	float diagRead(int32_t c, double pos) const;
+#endif
 
 	static constexpr int32_t kMaxPendingOnsets = 8;
 	double pendingOnsets_[kMaxPendingOnsets];
