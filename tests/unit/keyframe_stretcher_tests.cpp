@@ -482,3 +482,15 @@ TEST(KeyframeStretcherTest, transientsLandOnTheGridRepitchedUp) {
 TEST(KeyframeStretcherTest, transientsLandOnTheGridRepitchedDown) {
 	checkTransients(0.7f, 0.7f);
 }
+
+TEST(KeyframeStretcherTest, keepsTheTopEnd) {
+	// Keyframe values come from the raw signal, not the B-spline that finds them, so high frequencies keep their level
+	for (float freq : {8000.0f, 12000.0f, 14000.0f}) {
+		std::vector<float> src = sine(freq, 0.5f, 1.0f);
+		Player player(src);
+		std::vector<float> out = player.render(30000, 1.0f, 1.0f);
+		CHECK(allFinite(out));
+		const double levelDb = 20.0 * std::log10(rms(out, 4000, 30000) / rms(src, 4000, 30000));
+		CHECK(levelDb > -1.0 && levelDb < 0.5);
+	}
+}

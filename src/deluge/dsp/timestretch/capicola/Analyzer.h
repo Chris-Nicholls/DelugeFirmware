@@ -18,7 +18,7 @@ template <int bufsz = 1024>
 class Analyzer {
 private:
     SparseLine<bufsz>*  sparse;      // borrowed; owner keeps the storage alive
-    DeluxeLine<float,8> raw;         // raw input ring for the B-spline front end
+    DeluxeLine<float,16> raw;        // raw input ring for the B-spline front end ([Deluge] 16 for the value read)
     CubicResult         mostRecent;  // last front-end read (value + d1)
 
     // 64-bit: both are monotonic for the life of the session and nothing
@@ -29,6 +29,56 @@ private:
     float  fs;                       // sample rate
     bool   firstAnalysis;            // seed the very first keyframe unconditionally
     bool   armFinal;                 // force one closing keyframe on next Analyze
+
+    // [Deluge] Analysis runs this many samples further behind the input than
+    // upstream's, so that each extremum's value can be read from the raw signal
+    // with a symmetric 8-point window (see ReadValue()), which needs 4 samples
+    // on the newer side.
+    static constexpr int kLag = 3;
+
+    // [Deluge] 8-point Lanczos (a = 4) weights at kPhases + 1 fractional
+    // positions, interpolated between. Tabulated once, on first use.
+    static constexpr int kPhases = 128;
+    struct LanczosTable {
+        float w[kPhases + 1][8];
+        LanczosTable() {
+            for (int p = 0; p <= kPhases; p++) {
+                const float t = (float)p / (float)kPhases;
+                float sum = 0.0f;
+                for (int k = -3; k <= 4; k++) {
+                    const float x = (float)k - t;
+                    float v = 1.0f;
+                    if (std::fabs(x) > 1e-6f) {
+                        const float px = 3.14159265358979f * x;
+                        v = 4.0f * std::sin(px) * std::sin(px * 0.25f) / (px * px);
+                    }
+                    w[p][k + 3] = v;
+                    sum += v;
+                }
+                for (float& v : w[p]) v /= sum;   // unity gain at DC
+            }
+        }
+    };
+    static const LanczosTable& Lanczos() { static const LanczosTable table; return table; }
+
+    // [Deluge] Value of the raw signal at a fractional delay (ReadHermite's
+    // convention: the fraction moves towards older samples). The B-spline is
+    // still what finds the extremum, but its value used to come from the
+    // B-spline too, whose lowpass cost ~3 dB at 10 kHz and ~13 dB at 18 kHz.
+    float ReadValue(float delay) const {
+        const int   d = (int)delay;
+        const float position = (delay - (float)d) * (float)kPhases;
+        const int   p = (int)position;
+        const float f = position - (float)p;
+        const float* w0 = Lanczos().w[p];
+        const float* w1 = Lanczos().w[(p < kPhases) ? p + 1 : p];
+        float acc = 0.0f;
+        for (int k = 0; k < 8; k++) {
+            const float w = w0[k] + f * (w1[k] - w0[k]);
+            acc += w * raw.Read((float)(d - 3 + k));
+        }
+        return acc;
+    }
 
     inline void Push(const Keyframe& kf) {
         sparse->Write(kf);
@@ -83,7 +133,7 @@ public:
         // advanced by one), so last sample's mostRecent is this sample's older
         // read — one spline eval per sample, not two.
         const CubicResult older = mostRecent;
-        mostRecent = raw.ReadBSplineD1Integer(2);
+        mostRecent = raw.ReadBSplineD1Integer(2 + kLag);
 
         bool crossedD1 = ((older.d1 > 0.0f && mostRecent.d1 <= 0.0f) ||
                           (older.d1 < 0.0f && mostRecent.d1 >= 0.0f));
@@ -108,10 +158,10 @@ public:
         if (crossedD1 && valueDiff > threshold) {
             // Fractional peak location between the two front-end taps.
             float  alpha = std::abs(older.d1) / (std::abs(older.d1) + std::abs(mostRecent.d1));
-            double index = (double)(rawCount - 2) + alpha;
+            double index = (double)(rawCount - 2 - kLag) + alpha;
             if (std::abs(index - lastFrame->time) > 1.0) {
                 kf.time  = index;
-                kf.value = raw.ReadBSpline(3.0f - alpha);
+                kf.value = ReadValue((float)(3 + kLag) - alpha);   // [Deluge]
                 Push(kf);
                 return true;
             }
@@ -130,11 +180,14 @@ public:
     // block-rate reconstruction error. Does NOT advance the write head. Returns
     // true iff a frame was written.
     bool GuardKeyframe(double maxGap) {
-        if ((double)rawCount - sparse->GetLatest()->time <= maxGap)
+        if ((double)(rawCount - kLag) - sparse->GetLatest()->time <= maxGap)   // [Deluge] kLag
             return false;
         Keyframe kf;
-        kf.value = mostRecent.value;
-        kf.time  = (rawCount > 0) ? (double)(rawCount - 1) : 0.0;
+        // [Deluge] At the analysis point (kLag behind the input), with the raw
+        // sample that's actually at that time rather than the smoothed value
+        // from two samples earlier.
+        kf.value = raw.Read((float)(1 + kLag));
+        kf.time  = (rawCount > kLag) ? (double)(rawCount - 1 - kLag) : 0.0;
         sparse->Write(kf);
         sparseCount++;
         return true;
