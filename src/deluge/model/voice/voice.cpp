@@ -2251,6 +2251,16 @@ dontUseCache: {}
 
 			VoiceUnisonPartSource* source = &unisonParts[u].sources[s];
 			OscType inputTypeNow = sound.sources[s].oscType;
+			bool wantKeyframe = (sound.sources[s].sampleControls.interpolationMode == InterpolationMode::KEYFRAME);
+
+			// If the pitch shifting algorithm was changed (it's chosen in the Interpolation menu), start again with
+			// the new one
+			if (source->livePitchShifter && source->livePitchShifter->requestedKeyframeEngine() != wantKeyframe) {
+				source->livePitchShifter->~LivePitchShifter();
+				delugeDealloc(source->livePitchShifter);
+				source->livePitchShifter = nullptr;
+			}
+
 			// If pitch shifting and we weren't previously...
 			if (phaseIncrement != kMaxSampleValue) {
 
@@ -2268,7 +2278,8 @@ dontUseCache: {}
 						void* memory = GeneralMemoryAllocator::get().allocMaxSpeed(sizeof(LivePitchShifter));
 
 						if (memory) {
-							source->livePitchShifter = new (memory) LivePitchShifter(inputTypeNow, phaseIncrement);
+							source->livePitchShifter =
+							    new (memory) LivePitchShifter(inputTypeNow, phaseIncrement, wantKeyframe);
 							D_PRINTLN("start pitch shifting");
 						}
 					}

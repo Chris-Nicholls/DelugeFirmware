@@ -357,3 +357,98 @@ TEST(KeyframeStretcherTest, survivesWildModulation) {
 		CHECK(std::abs(v) < 2.0f);
 	}
 }
+
+namespace {
+
+// Live input, as LivePitchShifter::renderKeyframe() does it: each render feeds that window's input, then reads back a
+// fixed delay behind it, at real-time speed. Window sizes vary, as they do on the Deluge.
+std::vector<float> playLive(const std::vector<float>& input, float pitch) {
+	KeyframeStretcher* engine = KeyframeStretcher::create(1, KeyframeStretcher::Mode::LIVE);
+	engine->beginSegment(0);
+	const int32_t delay = KeyframeStretcher::liveDelay(kBlock);
+	std::vector<float> out;
+	int64_t grid = -1;
+	uint32_t seed = 99;
+	size_t start = 0;
+	while (true) {
+		seed = seed * 1664525u + 1013904223u;
+		int32_t n = 1 + (int32_t)((seed >> 8) % kBlock);
+		if (start + n > input.size()) {
+			break;
+		}
+		std::vector<int32_t> frames(n);
+		for (int32_t i = 0; i < n; i++) {
+			frames[i] = (int32_t)std::lround(input[start + i] * 1073741824.0f);
+		}
+		engine->feed(frames.data(), n);
+		if (grid < 0 && (int64_t)start >= delay) {
+			grid = (int64_t)start - delay;
+		}
+		std::vector<int32_t> block(n, 0);
+		if (grid >= 0) {
+			engine->render(block.data(), n, 1, (double)grid, 1.0f, pitch, 2147483647, 0);
+			grid += n;
+		}
+		for (int32_t v : block) {
+			out.push_back((float)v / 1073741824.0f);
+		}
+		start += n;
+	}
+	KeyframeStretcher::destroy(engine);
+	return out;
+}
+
+} // namespace
+
+TEST(KeyframeStretcherTest, liveUnityIsTheInputDelayed) {
+	std::vector<float> in = sine(440.0f, 0.5f, 1.0f);
+	std::vector<float> out = playLive(in, 1.0f);
+	const int32_t latency = KeyframeStretcher::liveDelay(kBlock);
+	CHECK(latency < (int32_t)(0.03f * kSampleRateF)); // Under 30 ms
+
+	double best = 0.0;
+	for (int32_t lag = latency - 4; lag <= latency + 4; lag++) {
+		double num = 0.0, da = 0.0, db = 0.0;
+		for (size_t i = 4000; i < 40000; i++) {
+			num += (double)out[i] * in[i - lag];
+			da += (double)out[i] * out[i];
+			db += (double)in[i - lag] * in[i - lag];
+		}
+		best = std::max(best, num / std::sqrt(da * db));
+	}
+	CHECK(best > 0.995);
+}
+
+TEST(KeyframeStretcherTest, livePitchUp) {
+	std::vector<float> out = playLive(sine(220.0f, 0.5f, 1.0f), 1.5f);
+	CHECK(allFinite(out));
+	DOUBLES_EQUAL(330.0, crossingRate(out, 4000, 40000), 330.0 * 0.05);
+	DOUBLES_EQUAL(0.5 / std::sqrt(2.0), rms(out, 4000, 40000), 0.06);
+}
+
+TEST(KeyframeStretcherTest, livePitchUpOctave) {
+	std::vector<float> out = playLive(sine(220.0f, 0.5f, 1.0f), 2.0f);
+	CHECK(allFinite(out));
+	DOUBLES_EQUAL(440.0, crossingRate(out, 4000, 40000), 440.0 * 0.05);
+}
+
+TEST(KeyframeStretcherTest, livePitchDown) {
+	std::vector<float> out = playLive(sine(440.0f, 0.5f, 1.0f), 0.5f);
+	CHECK(allFinite(out));
+	DOUBLES_EQUAL(220.0, crossingRate(out, 4000, 40000), 220.0 * 0.05);
+}
+
+TEST(KeyframeStretcherTest, liveTransientsStayOnTime) {
+	std::vector<float> hits = {0.25f, 0.75f, 1.25f};
+	const int32_t latency = KeyframeStretcher::liveDelay(kBlock);
+	for (float pitch : {0.7f, 1.0f, 1.5f}) {
+		std::vector<float> out = playLive(bursts(hits, 1.5f), pitch);
+		CHECK(allFinite(out));
+		for (float hit : hits) {
+			int32_t expected = (int32_t)(hit * kSampleRateF) + latency;
+			int32_t found = firstAbove(out, 0.05f, expected - (int32_t)(0.1f * kSampleRateF));
+			CHECK(found >= 0);
+			CHECK(std::abs(found - expected) < (int32_t)(0.002f * kSampleRateF));
+		}
+	}
+}

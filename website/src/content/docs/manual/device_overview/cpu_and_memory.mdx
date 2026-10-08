@@ -37,8 +37,9 @@ The INTErpolation setting also has a third option, KEYFRAME (KEYF on 7-segment d
 stretching from the Deluge's classic algorithm to the keyframe algorithm from
 [capicola](https://github.com/heavylight-industries/capicola). Instead of crossfading between overlapping chunks of the
 original audio, it reduces the audio to its waveform peaks and troughs and rebuilds it from those at the new speed and
-pitch, restarting just before each detected drum hit so that attacks stay crisp and on time. Pitch changes without time
-stretching sound as with SINC. Each time-stretched voice using it needs about 100 KB of RAM.
+pitch, restarting just before each detected drum hit so that attacks stay crisp and on time. It's also used to pitch
+shift live audio input, where it runs about 23 ms behind the input. Pitch changes to samples without time stretching
+sound as with SINC. Each voice using it needs about 100 KB of RAM.
 
 ## Sample and RAM management
 

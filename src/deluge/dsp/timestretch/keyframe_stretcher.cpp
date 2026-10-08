@@ -32,8 +32,9 @@ constexpr float kInputScale = 1.0f / 1073741824.0f;
 constexpr float kOutputScale = 2147483648.0f;
 
 // Fixed crossfade used by the grains' boundary guards. Short, because it is also how far ahead of the furthest read
-// head the keyframes must reach (see framesToFeed()).
+// head the keyframes must reach (see framesToFeed()) - and for live input, part of the latency.
 constexpr float kGuardFade = 256.0f;
+constexpr float kLiveGuardFade = 128.0f;
 
 // Grain size: how far the reading head may drift from the stretch grid before splicing back onto it - in keyframes
 // (capicola's measure, which adapts to the material), but never more than a time limit.
@@ -46,8 +47,10 @@ constexpr float kQuality = 0.001f;
 // Insert a boundary keyframe when the signal has had no extremum for this long, so the ring always reaches close to
 // the write head (silence and very low frequencies otherwise leave the readers with nothing to interpolate towards).
 // Not too short: such a keyframe usually lands mid-slope, where the interpolation flattens the waveform out. At this
-// length that only touches content below ~40 Hz.
+// length that only touches content below ~40 Hz. Live input can't read ahead, so this gap is directly part of the
+// latency there - which buys a shorter one at the cost of touching content below ~85 Hz.
 constexpr double kGuardGap = 512.0;
+constexpr double kLiveGuardGap = 256.0;
 constexpr int32_t kGuardCheckInterval = 32;
 
 // When the signal suddenly departs from quiet (a hit out of silence), mark where it was still quiet with a keyframe.
@@ -70,7 +73,6 @@ constexpr float kOnsetPreRoll = 32.0f;
 // How far past the furthest read head to keep the ring filled. The minimum is what the grains need not to run off the
 // end; the extra is so that transients are detected before the grid reaches them. Only kMaxExtraFeedBlocks blocks'
 // worth of the extra is fed per render, so starting a voice doesn't cost a burst of analysis.
-constexpr int32_t kMinLookahead = static_cast<int32_t>(kGuardFade) + 32;
 constexpr int32_t kOnsetLookahead = 768;
 constexpr int32_t kMaxExtraFeedBlocks = 2;
 
@@ -90,13 +92,21 @@ inline int32_t toQ31(float y) {
 
 } // namespace
 
-KeyframeStretcher* KeyframeStretcher::create(int32_t numChannels) {
+int32_t KeyframeStretcher::liveDelay(int32_t maxBlockSize) {
+	// The grid must stay far enough behind the input that the reading head - which runs ahead of it when pitching up
+	// - has room for a grain before it reaches the newest keyframe (up to a guard gap behind the input, and read
+	// no closer than a block) and the boundary guard pulls it back. See Granule::Read().
+	constexpr int32_t kRoomForGrain = 512;
+	return static_cast<int32_t>(kLiveGuardGap) + maxBlockSize + static_cast<int32_t>(kLiveGuardFade) + kRoomForGrain;
+}
+
+KeyframeStretcher* KeyframeStretcher::create(int32_t numChannels, Mode mode) {
 	void* memory = allocLowSpeed(sizeof(KeyframeStretcher));
 	if (memory == nullptr) {
 		return nullptr;
 	}
 	auto* stretcher = new (memory) KeyframeStretcher();
-	stretcher->init(numChannels);
+	stretcher->init(numChannels, mode);
 	return stretcher;
 }
 
@@ -107,8 +117,10 @@ void KeyframeStretcher::destroy(KeyframeStretcher* stretcher) {
 	}
 }
 
-void KeyframeStretcher::init(int32_t numChannels) {
+void KeyframeStretcher::init(int32_t numChannels, Mode mode) {
 	numChannels_ = (numChannels == 2) ? 2 : 1;
+	guardGap_ = (mode == Mode::LIVE) ? kLiveGuardGap : kGuardGap;
+	guardFade_ = (mode == Mode::LIVE) ? kLiveGuardFade : kGuardFade;
 	for (int32_t c = 0; c < numChannels_; c++) {
 		Channel& ch = channels_[c];
 		ch.sparse.Init();
@@ -117,7 +129,7 @@ void KeyframeStretcher::init(int32_t numChannels) {
 		ch.peakSinceKeyframe = 0.0f;
 		for (Granule& grain : ch.grain) {
 			grain.Init(ch.sparse, 0.0);
-			grain.SetFade(kGuardFade);
+			grain.SetFade(guardFade_);
 			grain.SetLeash(kLeashKeyframes);
 			grain.SetMaxLead(kMaxGrainSamples);
 		}
@@ -199,8 +211,8 @@ int32_t KeyframeStretcher::framesToFeed(int32_t numSamples, double gridStart, fl
 
 	// The grains may read up to one block behind the newest keyframe, and the newest keyframe may sit up to
 	// kGuardGap behind the write head.
-	int64_t minTarget =
-	    static_cast<int64_t>(std::ceil(furthest)) + 2 * numSamples + static_cast<int64_t>(kGuardGap) + kMinLookahead;
+	int64_t minTarget = static_cast<int64_t>(std::ceil(furthest)) + 2 * numSamples + static_cast<int64_t>(guardGap_)
+	                    + static_cast<int64_t>(guardFade_) + 32;
 	int64_t mustFeed = std::max<int64_t>(minTarget - fed_, 0);
 	int64_t wouldLikeToFeed = std::max<int64_t>(minTarget + kOnsetLookahead - fed_, 0);
 	return static_cast<int32_t>(std::min(wouldLikeToFeed, mustFeed + kMaxExtraFeedBlocks * numSamples));
@@ -254,7 +266,7 @@ void KeyframeStretcher::feed(const int32_t* frames, int32_t numFrames) {
 
 void KeyframeStretcher::guardKeyframes() {
 	for (int32_t c = 0; c < numChannels_; c++) {
-		if (channels_[c].analyzer.GuardKeyframe(kGuardGap)) {
+		if (channels_[c].analyzer.GuardKeyframe(guardGap_)) {
 			channels_[c].peakSinceKeyframe = 0.0f;
 		}
 	}

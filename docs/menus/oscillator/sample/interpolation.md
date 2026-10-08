@@ -7,4 +7,5 @@ Possible values are:
       uses the classic algorithm.
     - <string-for name="STRING_FOR_KEYFRAME">KEYFRAME<string-for> - Time stretching uses the keyframe algorithm from
       capicola, which rebuilds the audio from its waveform peaks and troughs and keeps drum hits crisp and on time.
-      Pitch shifting without time stretching works as in SINC.
+      Pitch shifting live audio input uses it too, with about 23 ms of delay. Pitch shifting samples without time
+      stretching works as in SINC.

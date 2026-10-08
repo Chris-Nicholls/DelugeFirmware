@@ -42,8 +42,18 @@ class KeyframeStretcher {
 public:
 	static constexpr int32_t kRingKeyframes = 4096;
 
+	enum class Mode {
+		SAMPLE, ///< Source can be read ahead of playback as far as needed (see framesToFeed())
+		LIVE,   ///< Source arrives in real time: run a fixed delay behind it (see liveDelay())
+	};
+
 	/// Allocates (in external RAM) and initialises. Returns nullptr if out of memory.
-	static KeyframeStretcher* create(int32_t numChannels);
+	static KeyframeStretcher* create(int32_t numChannels, Mode mode = Mode::SAMPLE);
+
+	/// For Mode::LIVE: how far the output should run behind the input, in frames, when renders are up to
+	/// maxBlockSize long. That is, render each window with the grid starting this far before the window's first
+	/// input frame (the grid then advancing exactly one frame per frame rendered).
+	static int32_t liveDelay(int32_t maxBlockSize);
 	static void destroy(KeyframeStretcher* stretcher);
 
 	[[nodiscard]] int32_t numChannels() const { return numChannels_; }
@@ -96,7 +106,7 @@ private:
 		float peakSinceKeyframe; ///< Loudest input since the last keyframe was written
 	};
 
-	void init(int32_t numChannels);
+	void init(int32_t numChannels, Mode mode);
 	void punch(double gridPos, double headPos, float fadeSamples);
 	void popOnset();
 	void guardKeyframes();
@@ -112,6 +122,8 @@ private:
 	capicola::OnsetDetector onsets_;
 
 	int32_t numChannels_;
+	double guardGap_;
+	float guardFade_;
 	int64_t fed_;           ///< Frames fed so far == analyzer write head == keyframe time of the next frame
 	double segmentKf_;      ///< Keyframe time at which the current segment starts
 	int64_t segmentSrcBig_; ///< Source position (<<24) the current segment starts at

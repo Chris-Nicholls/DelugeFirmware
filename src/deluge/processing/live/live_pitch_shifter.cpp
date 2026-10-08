@@ -17,18 +17,30 @@
 
 #include "processing/live/live_pitch_shifter.h"
 #include "definitions_cxx.hpp"
+#include "dsp/timestretch/keyframe_stretcher.h"
 #include "dsp/timestretch/time_stretcher.h"
 #include "io/debug/log.h"
 #include "processing/engines/audio_engine.h"
 #include "processing/live/live_input_buffer.h"
 #include "util/functions.h"
 #include <cstdlib>
+#include <cstring>
 
 // #define MEASURE_HOP_END_PERFORMANCE 1
 
-LivePitchShifter::LivePitchShifter(OscType newInputType, int32_t phaseIncrement) {
+LivePitchShifter::LivePitchShifter(OscType newInputType, int32_t phaseIncrement, bool useKeyframeEngine) {
 	inputType = newInputType;
 	numChannels = (newInputType == OscType::INPUT_STEREO) ? 2 : 1;
+
+	keyframeRequested = useKeyframeEngine;
+	if (useKeyframeEngine) {
+		using deluge::dsp::timestretch::KeyframeStretcher;
+		keyframe = KeyframeStretcher::create(numChannels, KeyframeStretcher::Mode::LIVE);
+		if (keyframe) {
+			keyframe->beginSegment(0);
+			keyframeDelay = KeyframeStretcher::liveDelay(SSI_TX_BUFFER_NUM_SAMPLES);
+		}
+	}
 
 	if (phaseIncrement < kMaxSampleValue) {
 		nextCrossfadeLength = samplesTilHopEnd = kInterpolationMaxNumSamples * 2;
@@ -60,6 +72,7 @@ LivePitchShifter::LivePitchShifter(OscType newInputType, int32_t phaseIncrement)
 }
 
 LivePitchShifter::~LivePitchShifter() {
+	deluge::dsp::timestretch::KeyframeStretcher::destroy(keyframe);
 
 #if INPUT_ENABLE_REPITCHED_BUFFER
 	if (repitchedBuffer) {
@@ -71,6 +84,11 @@ LivePitchShifter::~LivePitchShifter() {
 void LivePitchShifter::render(int32_t* __restrict__ outputBuffer, int32_t numSamplesThisFunctionCall,
                               int32_t phaseIncrement, int32_t amplitude, int32_t amplitudeIncrement,
                               int32_t interpolationBufferSize) {
+
+	if (keyframe) {
+		renderKeyframe(outputBuffer, numSamplesThisFunctionCall, phaseIncrement, amplitude, amplitudeIncrement);
+		return;
+	}
 
 	LiveInputBuffer* liveInputBuffer = AudioEngine::getOrCreateLiveInputBuffer(inputType, false);
 	if (ALPHA_OR_BETA_VERSION && !liveInputBuffer) {
@@ -876,7 +894,55 @@ bool LivePitchShifter::olderPlayHeadIsCurrentlySounding() {
 }
 
 bool LivePitchShifter::mayBeRemovedWithoutClick() {
+	// The keyframe engine runs a fixed latency behind the input, so there's never a moment where its output lines up
+	// with the input to hand back over cleanly. It just carries on at 1:1 pitch.
+	if (keyframe) {
+		return false;
+	}
 	return (!olderPlayHeadIsCurrentlySounding() && playHeads[PLAY_HEAD_NEWER].mode == PlayHeadMode::RAW_DIRECT);
+}
+
+// Pitch shifting with the keyframe engine: feed it the input as it arrives, and read it back a fixed latency behind,
+// at real-time speed (so time is preserved) and the requested pitch.
+void LivePitchShifter::renderKeyframe(int32_t* outputBuffer, int32_t numSamples, int32_t phaseIncrement,
+                                      int32_t amplitude, int32_t amplitudeIncrement) {
+	LiveInputBuffer* liveInputBuffer = AudioEngine::getOrCreateLiveInputBuffer(inputType, false);
+	if (ALPHA_OR_BETA_VERSION && !liveInputBuffer) {
+		FREEZE_WITH_ERROR("E165");
+	}
+	liveInputBuffer->giveInput(numSamples, AudioEngine::audioSampleTimer, inputType);
+
+	// Feed this window's input. The raw buffer is full-scale q31; the engine wants half that.
+	int32_t buffer[SSI_TX_BUFFER_NUM_SAMPLES * 2];
+	uint32_t firstFrame = liveInputBuffer->numRawSamplesProcessed - numSamples;
+	for (int32_t i = 0; i < numSamples; i++) {
+		uint32_t pos = (firstFrame + i) & (kInputRawBufferSize - 1);
+		for (int32_t c = 0; c < numChannels; c++) {
+			buffer[i * numChannels + c] = liveInputBuffer->rawBuffer[pos * numChannels + c] >> 1;
+		}
+	}
+	keyframe->feed(buffer, numSamples);
+	keyframeFramesFed += numSamples;
+
+	// The grid advances exactly as many frames as are rendered, whatever the window sizes, so the delay is fixed
+	// when it starts
+	if (keyframeGrid < 0) {
+		int64_t windowStart = keyframeFramesFed - numSamples;
+		if (windowStart < keyframeDelay) {
+			return; // Still building up the delay
+		}
+		keyframeGrid = windowStart - keyframeDelay;
+	}
+
+	// Render to a buffer of our own, so as to match the level of the play-heads, which output
+	// (rawSample * amplitude >> 32) << 4
+	memset(buffer, 0, numSamples * numChannels * sizeof(int32_t));
+	keyframe->render(buffer, numSamples, numChannels, (double)keyframeGrid, 1.0f, (float)phaseIncrement / 16777216.0f,
+	                 amplitude, amplitudeIncrement);
+	keyframeGrid += numSamples;
+	for (int32_t i = 0; i < numSamples * numChannels; i++) {
+		outputBuffer[i] += buffer[i] << 4;
+	}
 }
 
 #if INPUT_ENABLE_REPITCHED_BUFFER
