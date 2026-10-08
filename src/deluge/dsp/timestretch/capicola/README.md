@@ -20,7 +20,7 @@ files stay diffable against upstream.
 | `SparseLine.h` | `lib/SparseLine.h` | none |
 | `DeluxeLine.h` | `lib/DeluxeLine.h` | none |
 | `filter.h` | `lib/filter.h` | none |
-| `Analyzer.h` | `lib/Analyzer.h` | include paths; each extremum's value is read from the raw signal with an 8-point Lanczos window instead of from the B-spline (which only locates it), with analysis running 3 samples later to give that window its newer samples; boundary keyframes take the raw sample at their own time. Restores the top end (−0.4 dB at 14 kHz, was −6.5 dB) without adding distortion. Changes are marked `[Deluge]`. |
+| `Analyzer.h` | `lib/Analyzer.h` | include paths |
 | `Granule.h` | `lib/Granule.h` | include path; `RetriggerAt()`, `SetGrid()`, `Front()` added for a host-owned timeline; `SetMaxLead()` caps a grain's length in time as well as in keyframes; the "grid reached the oldest frame" back-guard only applies to a reversing grid. Changes are marked `[Deluge]`. |
 | `OnsetDetector.h` | `lib/Detector.h` | trimmed rewrite: no event history, integer clock, integer-lag spline reads, and reports where the envelope started rising towards each kept peak as the onset |
 
