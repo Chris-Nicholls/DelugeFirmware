@@ -20,8 +20,8 @@ files stay diffable against upstream.
 | `SparseLine.h` | `lib/SparseLine.h` | none |
 | `DeluxeLine.h` | `lib/DeluxeLine.h` | none |
 | `filter.h` | `lib/filter.h` | none |
-| `Analyzer.h` | `lib/Analyzer.h` | include paths |
-| `Granule.h` | `lib/Granule.h` | include path; `RetriggerAt()`, `SetGrid()`, `Front()` added for a host-owned timeline; `SetMaxLead()` caps a grain's length in time as well as in keyframes; the "grid reached the oldest frame" back-guard only applies to a reversing grid. Changes are marked `[Deluge]`. |
+| `Analyzer.h` | `lib/Analyzer.h` | include paths; a frame's time is only converted to double when it's about to be stored (an int64 → double conversion is a library call on ARM, and was being made every sample). Changes are marked `[Deluge]`. |
+| `Granule.h` | `lib/Granule.h` | include path; `RetriggerAt()`, `SetGrid()`, `Front()` added for a host-owned timeline; `SetMaxLead()` caps a grain's length in time as well as in keyframes; the "grid reached the oldest frame" back-guard only applies to a reversing grid; `BeginBlock()` no longer walks every new keyframe each block to track the delayed tap and the live edge's keyframe index (neither is used per block - the tap is now found by binary search when a re-anchor needs it). Changes are marked `[Deluge]`. |
 | `OnsetDetector.h` | `lib/Detector.h` | trimmed rewrite: no event history, integer clock, integer-lag spline reads, and reports where the envelope started rising towards each kept peak as the onset |
 
 The Deluge-specific glue (feeding the engine from a `Sample`, keeping it in

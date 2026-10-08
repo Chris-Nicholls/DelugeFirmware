@@ -152,13 +152,28 @@ public:
     void BeginBlock(int size) {
         blockSize = size;
         writePos  = sparse_->GetWritePosition();
-        liveEdge  = sparse_->GetMinReadPosition(size);
-        UpdateMaster();
+        // [Deluge] Only the live edge's TIME is used (its keyframe index only
+        // feeds runway.sparse, which nothing reads), so don't walk back through
+        // the block's keyframes to find it. And the delayed tap is only needed
+        // by ReanchorMaster() / Retrigger(), which now work it out themselves -
+        // keeping it current here walked every new keyframe, every block.
+        liveEdge  = { writePos.sparse, writePos.uniform - (double)size };
+    }
+
+    // [Deluge] The delayed tap, found by binary search when actually needed.
+    void RefreshMaster() {
+        double m = writePos.uniform - (double)fixedDuration;
+        if (m > liveEdge.uniform) m = liveEdge.uniform;
+        if (m < 0.0)              m = 0.0;
+        master.uniform = m;
+        masterW = sparse_->WindowAt(m);
+        master.sparse = masterW.index;
     }
 
     // Begin a FIXED-duration crossfade re-anchoring to the delayed tap. Reuses
     // the cached `masterW` — no walk, no search.
     void ReanchorMaster() {
+        RefreshMaster();   // [Deluge]
         temp        = Head(masterW, master.uniform, pitch);
         splicePhase = 0.0f;
         splicing    = true;
@@ -182,6 +197,7 @@ public:
     // KeyframeRecorder). BeginBlock has already refreshed master this block; any
     // in-flight splice is simply abandoned, since this grain enters at zero gain.
     void Retrigger() {
+        RefreshMaster();   // [Deluge]
         ideal  = Head(masterW, master.uniform, stretch);
         actual = Head(masterW, master.uniform, pitch);
         splicing    = false;

@@ -29,7 +29,7 @@ public:
 		// kAvgSec time constant -> normalised fc: 1/(2*pi*tau) Hz over fs/2.
 		avgLp.SetCutoff(1.0f / ((float)M_PI * kAvgSec * fs));
 		threshold = 2.0f;
-		count = 0;
+		clock = 0.0;
 		gapSamps = 0;
 		minGapSamps = (int32_t)(kMinGapSec * fs);
 		prevNewer = {};
@@ -57,7 +57,7 @@ public:
 
 		// Envelope samples sit 2 behind the input (raw B-spline lag) and a
 		// further 2..3 behind on the env ring.
-		const double now = (double)count;
+		const double now = clock;
 		bool fired = false;
 
 		// d1 is d/d(delay); the delay axis points backward in time, so rising in
@@ -81,7 +81,7 @@ public:
 		if (gapSamps > 0) {
 			gapSamps--;
 		}
-		count++;
+		clock += 1.0; // A double counter: converting an integer one is a library call on ARM
 		return fired;
 	}
 
@@ -110,7 +110,7 @@ private:
 	float fs;
 	float threshold;
 	double troughTime;
-	int64_t count;
+	double clock;
 	int32_t gapSamps;
 	int32_t minGapSamps;
 };

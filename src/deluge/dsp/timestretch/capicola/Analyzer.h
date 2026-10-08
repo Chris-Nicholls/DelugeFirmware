@@ -91,7 +91,11 @@ public:
         Keyframe* lastFrame = sparse->GetLatest();
         Keyframe kf;
         kf.value = mostRecent.value;
-        kf.time  = (rawCount > 0) ? (double)(rawCount - 1) : 0.0;
+        // [Deluge] Only work the time out when a frame is about to be stored like
+        // this: converting the 64-bit count to double is a library call on ARM,
+        // and was costing more than the rest of this function every sample.
+        if (firstAnalysis || armFinal)
+            kf.time = (rawCount > 0) ? (double)(rawCount - 1) : 0.0;
 
         float valueDiff = std::abs(mostRecent.value - lastFrame->value);
 
