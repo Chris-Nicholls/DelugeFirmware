@@ -33,13 +33,17 @@ class VoiceUnisonPartSource;
 class Cluster;
 class Sample;
 class SampleCache;
+namespace deluge::dsp::timestretch {
+class KeyframeStretcher;
+}
 
 class [[gnu::hot]] TimeStretcher {
 public:
 	TimeStretcher() = default;
 	bool init(Sample* sample, VoiceSample* voiceSample, SamplePlaybackGuide* guide, int64_t newSamplePosBig,
 	          int32_t numChannels, int32_t phaseIncrement, int32_t timeStretchRatio, int32_t playDirection,
-	          int32_t priorityRating, int32_t fudgingNumSamplesTilLoop, LoopType loopingType);
+	          int32_t priorityRating, int32_t fudgingNumSamplesTilLoop, LoopType loopingType,
+	          bool useKeyframeEngine = false);
 	void reInit(int64_t newSamplePosBig, SamplePlaybackGuide* guide, VoiceSample* voiceSample, Sample* sample,
 	            int32_t numChannels, int32_t timeStretchRatio, int32_t phaseIncrement, uint64_t combinedIncrement,
 	            int32_t playDirection, LoopType loopingType, int32_t priorityRating);
@@ -97,6 +101,12 @@ public:
 
 	Cluster* percCacheClustersNearby[2]; // Remembers and acts as a "reason" for the two most recently needed / accessed
 	                                     // Clusters, basically
+
+	// If set, this TimeStretcher uses the keyframe (capicola) algorithm instead of hopping between play-heads. Then
+	// samplePosBig is still the authoritative play position, but the VoiceSample's own reader just feeds source
+	// audio into the engine at native speed, and none of the hop / older-head / perc-cache machinery is used.
+	deluge::dsp::timestretch::KeyframeStretcher* keyframe = nullptr;
+	bool keyframeNeedsSegment = false; // Reposition the feed at samplePosBig before rendering
 
 private:
 	bool setupNewPlayHead(Sample* sample, VoiceSample* voiceSample, SamplePlaybackGuide* guide, int32_t newHeadBytePos,

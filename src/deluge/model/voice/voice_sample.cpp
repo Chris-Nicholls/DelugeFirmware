@@ -17,11 +17,13 @@
 
 #include "model/voice/voice_sample.h"
 #include "definitions_cxx.hpp"
+#include "dsp/timestretch/keyframe_stretcher.h"
 #include "dsp/timestretch/time_stretcher.h"
 #include "io/debug/log.h"
 #include "memory/general_memory_allocator.h"
 #include "model/sample/sample.h"
 #include "model/sample/sample_cache.h"
+#include "model/settings/runtime_feature_settings.h"
 #include "model/voice/voice.h"
 #include "playback/playback_handler.h"
 #include "processing/engines/audio_engine.h"
@@ -33,6 +35,12 @@
 extern "C" {}
 
 extern int32_t spareRenderingBuffer[][SSI_TX_BUFFER_NUM_SAMPLES];
+
+namespace {
+bool useKeyframeTimeStretching() {
+	return runtimeFeatureSettings.isOn(RuntimeFeatureSettingType::KeyframeTimeStretch);
+}
+} // namespace
 
 void VoiceSample::beenUnassigned(bool wontBeUsedAgain) {
 	unassignAllReasons(wontBeUsedAgain);
@@ -320,8 +328,10 @@ bool VoiceSample::weShouldBeTimeStretchingNow(Sample* sample, SamplePlaybackGuid
 		                                      // reversed and just cancelled reading from cache
 		int32_t playSample = divide_round_negative(playByte, sample->numChannels * sample->byteDepth);
 
+		// The keyframe engine renders straight to the output, so it's not used when we're writing to a cache
+		bool useKeyframeEngine = (cache == nullptr) && useKeyframeTimeStretching();
 		timeStretcher->init(sample, this, guide, (int64_t)playSample << 24, sample->numChannels, phaseIncrement,
-		                    timeStretchRatio, playDirection, priorityRating, 0, loopingType);
+		                    timeStretchRatio, playDirection, priorityRating, 0, loopingType, useKeyframeEngine);
 		bool success = reassessReassessmentLocation(
 		    guide, sample,
 		    priorityRating); // Got to - because time stretching affects the SampleLowLevelReader's adherence to markers
@@ -329,6 +339,11 @@ bool VoiceSample::weShouldBeTimeStretchingNow(Sample* sample, SamplePlaybackGuid
 		if (!success) {
 			return false;
 		}
+	}
+
+	// The keyframe engine finds its own transients
+	if (timeStretcher->keyframe) {
+		return true;
 	}
 
 	// Read some perc cache
@@ -445,7 +460,9 @@ bool VoiceSample::render(SamplePlaybackGuide* guide, int32_t* __restrict__ outpu
 				if (!success) {
 					return false;
 				}
-				timeStretcher->setupCrossfadeFromCache(oldCache, cacheBytePos, sampleSourceNumChannels);
+				if (!timeStretcher->keyframe) { // The keyframe engine can't take a crossfade from a cache
+					timeStretcher->setupCrossfadeFromCache(oldCache, cacheBytePos, sampleSourceNumChannels);
+				}
 				goto timeStretchingConsidered;
 			}
 		}
@@ -495,7 +512,9 @@ bool VoiceSample::render(SamplePlaybackGuide* guide, int32_t* __restrict__ outpu
 					if (!success) {
 						return false;
 					}
-					timeStretcher->setupCrossfadeFromCache(cache, cacheBytePos, sampleSourceNumChannels);
+					if (!timeStretcher->keyframe) {
+						timeStretcher->setupCrossfadeFromCache(cache, cacheBytePos, sampleSourceNumChannels);
+					}
 
 					// Check that all that setting up didn't steal any of our cache to the left of where we are now - in
 					// which case we can't continue to write to it, and there's nothing else we want it for, so forget
@@ -545,7 +564,9 @@ bool VoiceSample::render(SamplePlaybackGuide* guide, int32_t* __restrict__ outpu
 		// If we shouldn't be time stretching now, but if it remains set up from before, stop it. We'd know there's no
 		// cache in this case
 		else {
-			if (timeStretcher && !fudging) [[unlikely]] {
+			// (The keyframe engine just carries on at a 1:1 ratio - there's no point at which its output lines up
+			// sample-for-sample with the raw waveform to hand back over.)
+			if (timeStretcher && !fudging && !timeStretcher->keyframe) [[unlikely]] {
 
 				// We're only allowed to stop once all the play-pos's line up, otherwise there's a big ol' click
 				bool canExit;
@@ -1115,6 +1136,19 @@ readNonTimestretched:
 		else [[likely]] { // TODO: move this all into the TimeStretcher class?
 
 			// AudioEngine::logAction("yes timestretching");
+
+			if (timeStretcher->keyframe && !cache) {
+				bool stillGoing = renderKeyframeStretched(outputBufferWritePos, guide, sample,
+				                                          numSamplesThisUncachedRead, sampleSourceNumChannels,
+				                                          numChannelsInOutputBuffer, phaseIncrement, combinedIncrement,
+				                                          amplitude, amplitudeIncrement, loopingType, priorityRating);
+				if (!stillGoing) {
+					return false;
+				}
+				amplitude += amplitudeIncrement * numSamplesThisUncachedRead;
+				outputBufferWritePos += numSamplesThisUncachedRead * numChannelsInOutputBuffer;
+				goto finishedTimestretchedRead;
+			}
 
 			int32_t* timeStretchResultWritePos;
 			int32_t numChannelsInTimeStretchResult;
@@ -1764,6 +1798,11 @@ bool VoiceSample::possiblySetUpCache(SampleControls* sampleControls, SamplePlayb
 	if (guide->sequenceSyncLengthTicks && (playbackHandler.isExternalClockActive())) {
 		return true; // No syncing to external clock
 	}
+	// The keyframe engine renders straight to the output - nothing to cache
+	if ((timeStretcher && timeStretcher->keyframe)
+	    || (timeStretchRatio != kMaxSampleValue && useKeyframeTimeStretching())) {
+		return true;
+	}
 	if (sampleControls->interpolationMode != InterpolationMode::SMOOTH) {
 		return true;
 	}
@@ -1787,4 +1826,109 @@ bool VoiceSample::possiblySetUpCache(SampleControls* sampleControls, SamplePlayb
 	}
 
 	return true;
+}
+
+// Time stretching with the keyframe engine (see dsp/timestretch/keyframe_stretcher.h). timeStretcher->samplePosBig
+// stays the authoritative play position, exactly as for the classic algorithm, so loop points, end points, the play
+// cursor and AudioClip sync all work unchanged. Our own SampleLowLevelReader is just the engine's feed: it reads
+// ahead of samplePosBig at native speed, and gets repositioned whenever samplePosBig jumps somewhere the engine
+// hasn't got.
+// Returns false if the voice should be unassigned.
+bool VoiceSample::renderKeyframeStretched(int32_t* outputBuffer, SamplePlaybackGuide* guide, Sample* sample,
+                                          int32_t numSamples, int32_t sourceNumChannels, int32_t outputNumChannels,
+                                          int32_t phaseIncrement, uint64_t combinedIncrement, int32_t amplitude,
+                                          int32_t amplitudeIncrement, LoopType loopingType, int32_t priorityRating) {
+	using deluge::dsp::timestretch::KeyframeStretcher;
+	KeyframeStretcher& engine = *timeStretcher->keyframe;
+	int32_t playDirection = guide->playDirection;
+	int32_t bytesPerSample = sample->byteDepth * sourceNumChannels;
+
+	// If synced to the sequence (AudioClips), keep pulled into line with it, as TimeStretcher::hopEnd() does. Only
+	// correct real drift, though: tiny corrections every render would just be jitter.
+	if (guide->sequenceSyncLengthTicks && playbackHandler.isEitherClockActive()) {
+		constexpr int64_t kMaxDriftBig = (int64_t)64 << 24;
+		int64_t startSample = (uint32_t)(guide->startPlaybackAtByte - sample->audioDataStartPosBytes)
+		                      / (uint8_t)(sample->numChannels * sample->byteDepth);
+		int64_t syncedPosBig = (startSample + (int64_t)guide->getSyncedNumSamplesIn() * playDirection) << 24;
+		int64_t drift = syncedPosBig - timeStretcher->samplePosBig;
+		if (drift > kMaxDriftBig || drift < -kMaxDriftBig) {
+			timeStretcher->samplePosBig = syncedPosBig;
+		}
+	}
+
+	double grid = engine.gridFor(timeStretcher->samplePosBig, playDirection);
+
+	// Need to feed from somewhere new?
+	if (timeStretcher->keyframeNeedsSegment || !engine.canMoveGridTo(grid)) {
+		timeStretcher->keyframeNeedsSegment = false;
+		int32_t samplePos = timeStretcher->getSamplePos(playDirection);
+
+		// As TimeStretcher::setupNewPlayHead()
+		unassignAllReasons(false);
+		bool feeding = setupClustersForPlayFromByte(
+		                   guide, sample, sample->audioDataStartPosBytes + samplePos * bytesPerSample, priorityRating)
+		               && changeClusterIfNecessary(guide, sample, false, priorityRating);
+		interpolationBufferSizeLastTime = 0;
+		oscPos = 0;
+
+		engine.beginSegment(samplePos);
+		if (!feeding || !clusters[0]) {
+			engine.markSourceEnded(); // Somewhere outside the waveform - it's silence from here
+		}
+		grid = engine.gridFor(timeStretcher->samplePosBig, playDirection);
+	}
+	else if (engine.isDiscontinuity(grid)) {
+		engine.requestPunch(grid);
+	}
+
+	float pitch = (float)phaseIncrement * (1.0f / 16777216.0f);
+	float gridSpeed = (float)combinedIncrement * (1.0f / 16777216.0f);
+
+	// Feed the engine enough source to render this window
+	constexpr int32_t kFeedChunk = 128;
+	int32_t feedBuffer[kFeedChunk * 2];
+	int32_t engineNumChannels = engine.numChannels();
+	int32_t jumpAmount = bytesPerSample * playDirection;
+	int32_t framesLeft = engine.framesToFeed(numSamples, grid, gridSpeed, pitch);
+	while (framesLeft > 0) {
+		int32_t framesNow = std::min(framesLeft, kFeedChunk);
+
+		if (engine.sourceEnded()) {
+			engine.feedSilence(framesNow);
+		}
+		else {
+			bool stillActive = considerUpcomingWindow(guide, sample, &framesNow, kMaxSampleValue, false,
+			                                          kInterpolationMaxNumSamples, false, priorityRating);
+			if (!stillActive) {
+				// As readSamplesForTimeStretching(): clusters[0] still being there means a Cluster wasn't loaded
+				// in time, rather than that we reached the end
+				if (clusters[0]) {
+					return false;
+				}
+				engine.markSourceEnded();
+				continue;
+			}
+
+			memset(feedBuffer, 0, framesNow * engineNumChannels * sizeof(int32_t));
+			int32_t* feedPos = feedBuffer;
+			int32_t feedAmplitude = 2147483647;
+			readSamplesNative(&feedPos, framesNow, sample, jumpAmount, sourceNumChannels, engineNumChannels,
+			                  &feedAmplitude, 0);
+			engine.feed(feedBuffer, framesNow);
+		}
+		framesLeft -= framesNow;
+	}
+
+	// Match the level of the classic algorithm's play-heads: they get amplitude >> 1 (see the "preCacheAmplitude"
+	// comment in render()), and when resampling, their samples come out at half scale.
+	int32_t shift = (phaseIncrement == kMaxSampleValue) ? 1 : 2;
+	engine.render(outputBuffer, numSamples, outputNumChannels, grid, gridSpeed, pitch, amplitude >> shift,
+	              amplitudeIncrement >> shift);
+
+	timeStretcher->samplePosBig += (int64_t)combinedIncrement * numSamples * playDirection;
+	timeStretcher->playHeadStillActive[PLAY_HEAD_NEWER] = !engine.sourceEnded();
+	timeStretcher->playHeadStillActive[PLAY_HEAD_OLDER] = !engine.drained();
+
+	return !(loopingType == LoopType::NONE && !timeStretcher->playHeadStillActive[PLAY_HEAD_OLDER]
+	         && !timeStretcher->playHeadStillActive[PLAY_HEAD_NEWER]);
 }

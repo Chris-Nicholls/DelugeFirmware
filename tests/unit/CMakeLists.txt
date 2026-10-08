@@ -67,6 +67,8 @@ file(GLOB_RECURSE deluge_SOURCES
         # For iterance migration tests (links against the real iterancePresets[]
         # from lookuptables.cpp, already included above)
         ../../src/deluge/model/iterance/iterance_migration.cpp
+        # For keyframe time stretching tests
+        ../../src/deluge/dsp/timestretch/keyframe_stretcher.cpp
 )
 
 add_executable(UnitTests
@@ -87,6 +89,7 @@ add_executable(UnitTests
         rgb_tests.cpp
         notes_state_tests.cpp
         iterance_migration_tests.cpp
+        keyframe_stretcher_tests.cpp
 )
 add_test(NAME UnitTests
         COMMAND UnitTests)

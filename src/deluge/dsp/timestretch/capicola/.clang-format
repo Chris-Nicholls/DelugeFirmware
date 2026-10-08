@@ -1,0 +1,3 @@
+# Upstream code (capicola), kept in its own style so it stays diffable against upstream.
+SortIncludes: Never
+DisableFormat: true

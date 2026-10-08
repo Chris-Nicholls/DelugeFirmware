@@ -18,6 +18,7 @@
 #include "dsp/timestretch/time_stretcher.h"
 #include "definitions_cxx.hpp"
 #include "deluge/model/sample/sample_low_level_reader.h"
+#include "dsp/timestretch/keyframe_stretcher.h"
 #include "io/debug/log.h"
 #include "memory/memory_allocator_interface.h"
 #include "model/sample/sample.h"
@@ -38,7 +39,8 @@
 
 bool TimeStretcher::init(Sample* sample, VoiceSample* voiceSample, SamplePlaybackGuide* guide, int64_t newSamplePosBig,
                          int32_t numChannels, int32_t phaseIncrement, int32_t timeStretchRatio, int32_t playDirection,
-                         int32_t priorityRating, int32_t fudgingNumSamplesTilLoop, LoopType loopingType) {
+                         int32_t priorityRating, int32_t fudgingNumSamplesTilLoop, LoopType loopingType,
+                         bool useKeyframeEngine) {
 
 	AudioEngine::logAction("TimeStretcher::init");
 
@@ -60,6 +62,25 @@ bool TimeStretcher::init(Sample* sample, VoiceSample* voiceSample, SamplePlaybac
 	buffer = nullptr;
 
 	numTimesMissedHop = 0;
+
+	keyframe = nullptr;
+	keyframeNeedsSegment = false;
+
+	// Keyframe engine. Never for fudging, which is a classic-hop crossfade trick. If it can't be allocated, fall back
+	// to the classic algorithm.
+	if (useKeyframeEngine && !fudgingNumSamplesTilLoop) {
+		int32_t engineChannels = (numChannels == 2 && AudioEngine::renderInStereo) ? 2 : 1;
+		keyframe = deluge::dsp::timestretch::KeyframeStretcher::create(engineChannels);
+		if (keyframe) {
+			keyframeNeedsSegment = true;
+			olderHeadReadingFromBuffer = false;
+			samplesTilHopEnd = 2147483647; // Never hops
+			crossfadeProgress = kMaxSampleValue;
+			crossfadeIncrement = 0;
+			AudioEngine::logAction("---/");
+			return true;
+		}
+	}
 
 #if TIME_STRETCH_ENABLE_BUFFER
 	bufferFillingMode = BUFFER_FILLING_OFF;
@@ -151,6 +172,11 @@ void TimeStretcher::reInit(int64_t newSamplePosBig, SamplePlaybackGuide* guide, 
 
 	samplePosBig = newSamplePosBig;
 
+	// The keyframe engine notices the jump in samplePosBig itself, at its next render
+	if (keyframe) {
+		return;
+	}
+
 	// Not quite sure if these two are necessary...
 	// unassignAllReasonsForPercLookahead();
 	// unassignAllReasonsForPercCacheClusters();
@@ -173,6 +199,10 @@ void TimeStretcher::beenUnassigned() {
 	olderPartReader.unassignAllReasons(false);
 	if (buffer) {
 		delugeDealloc(buffer);
+	}
+	if (keyframe) {
+		deluge::dsp::timestretch::KeyframeStretcher::destroy(keyframe);
+		keyframe = nullptr;
 	}
 }
 

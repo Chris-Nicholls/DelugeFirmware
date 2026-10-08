@@ -98,6 +98,10 @@ private:
 	bool weShouldBeTimeStretchingNow(Sample* sample, SamplePlaybackGuide* guide, int32_t numSamples,
 	                                 int32_t phaseIncrement, int32_t timeStretchRatio, int32_t playDirection,
 	                                 int32_t priorityRating, LoopType loopingType);
+	bool renderKeyframeStretched(int32_t* outputBuffer, SamplePlaybackGuide* guide, Sample* sample, int32_t numSamples,
+	                             int32_t sourceNumChannels, int32_t outputNumChannels, int32_t phaseIncrement,
+	                             uint64_t combinedIncrement, int32_t amplitude, int32_t amplitudeIncrement,
+	                             LoopType loopingType, int32_t priorityRating);
 	void switchToReadingCacheFromWriting();
 	bool stopReadingFromCache();
 

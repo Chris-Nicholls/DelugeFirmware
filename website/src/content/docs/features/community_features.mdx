@@ -1390,6 +1390,12 @@ Note: these settings are saved to `SETTINGS/CommunityFeatures.XML` on your SD ca
   - When On, the ability to trim from the start of an audio clip without needing to reverse it is enabled.
 - `Show Battery Level (BATT)` <Badge text="c1.3" variant="tip" />
   - When On, displays battery level information in the System menu. Shows voltage and percentage on OLED displays, percentage on 7-segment displays.
+- `Keyframe Time Stretch (KFTS)`
+  - When On, samples and audio clips that need time stretching use the keyframe algorithm from
+    [capicola](https://github.com/heavylight-industries/capicola) instead of the Deluge's original one. The audio is
+    reduced to its waveform peaks and troughs, and played back from those with pitch and time fully independent; detected
+    transients restart playback right before each hit so that drum attacks stay crisp. Takes effect for notes and clips
+    that start stretching after the setting is changed.
 
 ## 6. Sysex Handling
 
