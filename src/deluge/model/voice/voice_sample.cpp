@@ -53,6 +53,7 @@ void VoiceSample::noteOn(SamplePlaybackGuide* guide, uint32_t samplesLate, int32
 	timeStretcher = nullptr; // Just in case
 	fudging = false;
 	forAudioClip = false;
+	keyframeUnavailable = false;
 }
 
 // Returns false if error
@@ -323,9 +324,13 @@ bool VoiceSample::weShouldBeTimeStretchingNow(Sample* sample, SamplePlaybackGuid
 		int32_t playSample = divide_round_negative(playByte, sample->numChannels * sample->byteDepth);
 
 		// The keyframe engine renders straight to the output, so it's not used when we're writing to a cache
-		bool useKeyframeEngine = (cache == nullptr) && interpolationMode == InterpolationMode::KEYFRAME;
+		bool useKeyframeEngine =
+		    (cache == nullptr) && interpolationMode == InterpolationMode::KEYFRAME && !keyframeUnavailable;
 		timeStretcher->init(sample, this, guide, (int64_t)playSample << 24, sample->numChannels, phaseIncrement,
 		                    timeStretchRatio, playDirection, priorityRating, 0, loopingType, useKeyframeEngine);
+		if (useKeyframeEngine && !timeStretcher->keyframe) {
+			keyframeUnavailable = true; // Out of memory: it's the classic algorithm for the rest of this note
+		}
 		bool success = reassessReassessmentLocation(
 		    guide, sample,
 		    priorityRating); // Got to - because time stretching affects the SampleLowLevelReader's adherence to markers
@@ -338,6 +343,14 @@ bool VoiceSample::weShouldBeTimeStretchingNow(Sample* sample, SamplePlaybackGuid
 	// The keyframe engine finds its own transients
 	if (timeStretcher->keyframe) {
 		return true;
+	}
+
+	// If we only wanted a TimeStretcher to re-pitch with the keyframe engine, and couldn't get one, don't keep a
+	// classic one doing nothing - just resample normally
+	if (timeStretchRatio == kMaxSampleValue && keyframeUnavailable && !fudging) {
+		endTimeStretching();
+		return reassessReassessmentLocation(guide, sample, priorityRating)
+		       && changeClusterIfNecessary(guide, sample, loopingType == LoopType::LOW_LEVEL, priorityRating);
 	}
 
 	// Read some perc cache
@@ -438,7 +451,7 @@ bool VoiceSample::render(SamplePlaybackGuide* guide, int32_t* __restrict__ outpu
 		    || (phaseIncrement != kMaxSampleValue
 		        && (desiredInterpolationMode == InterpolationMode::LINEAR
 		            || (interpolationBufferSize <= 2 && writingToCache)))
-		    || (desiredInterpolationMode == InterpolationMode::KEYFRAME && timeStretchRatio != kMaxSampleValue)) {
+		    || desiredInterpolationMode == InterpolationMode::KEYFRAME) {
 
 			bool needToAvoidClick = (!writingToCache && cache->timeStretchRatio != kMaxSampleValue);
 			SampleCache* oldCache = cache;
@@ -456,7 +469,9 @@ bool VoiceSample::render(SamplePlaybackGuide* guide, int32_t* __restrict__ outpu
 				if (!success) {
 					return false;
 				}
-				if (!timeStretcher->keyframe) { // The keyframe engine can't take a crossfade from a cache
+				// The keyframe engine can't take a crossfade from a cache. (And if we only wanted it for re-pitching
+				// and it couldn't be allocated, there's no TimeStretcher at all.)
+				if (timeStretcher && !timeStretcher->keyframe) {
 					timeStretcher->setupCrossfadeFromCache(oldCache, cacheBytePos, sampleSourceNumChannels);
 				}
 				goto timeStretchingConsidered;
@@ -509,7 +524,7 @@ bool VoiceSample::render(SamplePlaybackGuide* guide, int32_t* __restrict__ outpu
 					if (!success) {
 						return false;
 					}
-					if (!timeStretcher->keyframe) {
+					if (timeStretcher && !timeStretcher->keyframe) {
 						timeStretcher->setupCrossfadeFromCache(cache, cacheBytePos, sampleSourceNumChannels);
 					}
 
@@ -540,7 +555,7 @@ bool VoiceSample::render(SamplePlaybackGuide* guide, int32_t* __restrict__ outpu
 
 		// If the time stretching algorithm was changed (it's chosen in the Interpolation menu) while we're stretching,
 		// hand over to the new one
-		if (timeStretcher && !fudging && !cache
+		if (timeStretcher && !fudging && !cache && !keyframeUnavailable
 		    && (timeStretcher->keyframe != nullptr) != (desiredInterpolationMode == InterpolationMode::KEYFRAME))
 		    [[unlikely]] {
 			if (!stopTimeStretchingForAlgorithmChange(guide, sample, loopingType, priorityRating)) {
@@ -548,8 +563,13 @@ bool VoiceSample::render(SamplePlaybackGuide* guide, int32_t* __restrict__ outpu
 			}
 		}
 
+		// The keyframe engine also does plain re-pitching (speed changing with pitch): it's the same thing as
+		// stretching with the time and pitch rates equal, which never splices.
+		bool keyframeRepitch = desiredInterpolationMode == InterpolationMode::KEYFRAME
+		                       && phaseIncrement != kMaxSampleValue && !keyframeUnavailable;
+
 		// If we should be time stretching now...
-		if (timeStretchRatio != kMaxSampleValue) {
+		if (timeStretchRatio != kMaxSampleValue || keyframeRepitch) {
 			bool stillGoing =
 			    weShouldBeTimeStretchingNow(sample, guide, numSamples, phaseIncrement, timeStretchRatio, playDirection,
 			                                priorityRating, loopingType, desiredInterpolationMode);
@@ -1811,7 +1831,7 @@ bool VoiceSample::possiblySetUpCache(SampleControls* sampleControls, SamplePlayb
 	}
 	// The keyframe engine renders straight to the output - nothing to cache
 	if ((timeStretcher && timeStretcher->keyframe)
-	    || (sampleControls->interpolationMode == InterpolationMode::KEYFRAME && timeStretchRatio != kMaxSampleValue)) {
+	    || sampleControls->interpolationMode == InterpolationMode::KEYFRAME) {
 		return true;
 	}
 

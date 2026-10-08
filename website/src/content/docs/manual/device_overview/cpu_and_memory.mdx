@@ -33,13 +33,12 @@ Songs and presets created with pre-V2.1 firmware which include sample pitch adju
 
 The 16-point windowed-sinc interpolation uses a little more CPU power than the lower-quality linear interpolation, but not very much more, thanks to the hardware acceleration features of the Deluge’s CPU. If the Deluge’s CPU becomes overloaded, it may revert to using linear interpolation in some cases. It is not recommended that you manually switch to linear interpolation purely for the purpose of saving CPU power - it won’t have this effect in all cases.
 
-The INTErpolation setting also has a third option, KEYFRAME (KEYF on 7-segment displays), which switches time
-stretching from the Deluge's classic algorithm to the keyframe algorithm from
-[capicola](https://github.com/heavylight-industries/capicola). Instead of crossfading between overlapping chunks of the
-original audio, it reduces the audio to its waveform peaks and troughs and rebuilds it from those at the new speed and
-pitch, restarting just before each detected drum hit so that attacks stay crisp and on time. It's also used to pitch
-shift live audio input, where it runs about 23 ms behind the input. Pitch changes to samples without time stretching
-sound as with SINC. Each voice using it needs about 100 KB of RAM.
+The INTErpolation setting also has a third option, KEYFRAME (KEYF on 7-segment displays), which uses the keyframe
+algorithm from [capicola](https://github.com/heavylight-industries/capicola) wherever the other two would be used, and
+for time stretching. It reduces the audio to its waveform peaks and troughs and rebuilds it from those at the new speed
+and pitch, with pitch and time either linked or independent; when stretching, it restarts just before each detected
+drum hit so that attacks stay crisp and on time. On live audio input it runs about 23 ms behind the input. Each voice
+using it needs about 100 KB of RAM, and its output isn't cached.
 
 ## Sample and RAM management
 

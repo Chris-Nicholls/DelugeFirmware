@@ -452,3 +452,33 @@ TEST(KeyframeStretcherTest, liveTransientsStayOnTime) {
 		}
 	}
 }
+
+// Plain re-pitching, like a record: the time rate equals the pitch rate, so the head never leaves the grid
+TEST(KeyframeStretcherTest, repitchingChangesPitchAndLengthTogether) {
+	Player player(sine(220.0f, 0.5f, 2.0f));
+	std::vector<float> out = player.render(40000, 1.5f, 1.5f);
+
+	CHECK(allFinite(out));
+	DOUBLES_EQUAL(330.0, crossingRate(out, 2000, 40000), 330.0 * 0.02);
+	DOUBLES_EQUAL(0.5 / std::sqrt(2.0), rms(out, 2000, 40000), 0.03);
+	DOUBLES_EQUAL(60000.0, (double)(player.samplePosBig >> 24), 300.0); // 1.5x the source for the output
+}
+
+TEST(KeyframeStretcherTest, repitchingIsSmooth) {
+	// No splices should happen: the output of a sine stays a clean sine, with no jumps between samples bigger than
+	// the sine itself can make
+	Player player(sine(220.0f, 0.5f, 2.0f));
+	std::vector<float> out = player.render(40000, 0.8f, 0.8f);
+	const float maxStep = 0.5f * 2.0f * (float)M_PI * 220.0f * 0.8f / kSampleRateF;
+	for (size_t i = 2001; i < out.size(); i++) {
+		CHECK(std::abs(out[i] - out[i - 1]) < 1.15f * maxStep);
+	}
+}
+
+TEST(KeyframeStretcherTest, transientsLandOnTheGridRepitchedUp) {
+	checkTransients(1.5f, 1.5f);
+}
+
+TEST(KeyframeStretcherTest, transientsLandOnTheGridRepitchedDown) {
+	checkTransients(0.7f, 0.7f);
+}
